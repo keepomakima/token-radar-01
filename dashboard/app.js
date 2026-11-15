@@ -1,8 +1,10 @@
-// Token Radar's dashboard, model radar-2. It reads window.RADAR (written beside
-// dashboard/ by main.ts) and renders the ranked board, a filterable table, a
-// per-protocol detail view with the model's own inputs and the protocol's farm plan,
-// the live-token tab, and the model tab with the comparables fit and its
-// out-of-sample test. No network: every byte it shows is in data.js.
+// Token Radar's dashboard, model radar-3. It reads window.RADAR (written beside
+// dashboard/ by main.ts) and the comparables in comps.js, fits the size curve
+// itself with model.js — the same derivation main.ts runs — and renders the ranked
+// board, a filterable table, a per-protocol detail view with the model's own inputs
+// and the protocol's farm plan, the live-token tab, and the model tab with the
+// comparables fit and its out-of-sample tests. No network: every byte it shows is
+// in data.js and comps.js.
 (function () {
   'use strict';
 
@@ -10,6 +12,15 @@
   if (!DATA) return;
   var app = document.getElementById('app');
   var meta = document.getElementById('top-meta');
+
+  // The page fits the size curve itself, from the comparables shipped beside it
+  // (comps.js) with the model in model.js — the same derivation main.ts runs — so
+  // the number on the board is the number this page computes. If either file is
+  // missing, the page falls back to the curve the board was priced from.
+  var PAGE = null;
+  try {
+    if (window.RadarModel && window.COMPS) PAGE = window.RadarModel.fitPage(window.COMPS, DATA.model, DATA.as_of);
+  } catch (e) { PAGE = null; }
   var state = { q: '', category: 'all', chain: 'all', signal: 'all', tab: 'board', sort: 'implied', dir: -1, selected: null };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -31,11 +42,15 @@
   }
   function fmtMult(n) { return (Math.round(n * 10000) / 10000).toFixed(4).replace(/0+$/, '').replace(/\.$/, '.0'); }
 
-  // The model in one function: the page recomputes a row from the snapshot figures,
-  // the size curve and the row's own category residual, and checks the number
+  // The model in one function: the page recomputes a row from the snapshot figures
+  // with the curve it fitted itself from the comparables, and checks the number
   // board.json carries, so the page's code and the board's data are visibly the same
-  // arithmetic.
+  // arithmetic. Without the page fit, it falls back to the stored curve.
   function impliedOf(row, model) {
+    if (PAGE) {
+      var r = window.RadarModel.compsFor(row.category, PAGE.fit);
+      return window.RadarModel.impliedValue(row, DATA.as_of, model, PAGE.curve, r.residual).implied;
+    }
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
@@ -218,7 +233,7 @@
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chn),
       el('div', { class: 'field' }, el('span', { class: 'lab', text: 'View' }), el('div', { class: 'tabs' }, tabs)),
       el('div', { class: 'field' }, el('span', { class: 'lab', text: 'Signal band' }), el('div', { class: 'chips' }, chips)),
-      el('span', { class: 'count', text: state.tab === 'board' ? filteredRows().length + ' rows shown' : state.tab === 'live' ? DATA.live.length + ' live-token protocols' : 'model radar-2, fitted on ' + DATA.comps_size + ' comps' })
+      el('span', { class: 'count', text: state.tab === 'board' ? filteredRows().length + ' rows shown' : state.tab === 'live' ? DATA.live.length + ' live-token protocols' : 'model ' + DATA.model_version + ', fitted on ' + DATA.comps_size + ' comps' })
     );
   }
 
@@ -317,8 +332,14 @@
 
   function modelPanel() {
     var m = DATA.model;
-    var v = DATA.validation;
-    var rows = DATA.comps_categories.map(function (c) {
+    var v = PAGE ? PAGE.validation : DATA.validation;
+    var curve = PAGE ? PAGE.curve : DATA.size_curve;
+    var cats = PAGE ? PAGE.categories : DATA.comps_categories;
+    var agrees = PAGE &&
+      PAGE.curve.intercept === DATA.size_curve.intercept && PAGE.curve.slope === DATA.size_curve.slope &&
+      PAGE.validation.oos_factor === DATA.validation.oos_factor &&
+      PAGE.validation.oos_factor_b === DATA.validation.oos_factor_b;
+    var rows = cats.map(function (c) {
       return el('tr', null,
         el('td', { text: c.category }),
         el('td', { class: 'num', text: String(c.n) }),
@@ -328,10 +349,16 @@
     });
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed — model ' + DATA.model_version }),
-      el('p', { text: 'Every row is scored by one function of the snapshot figures. The size curve is log10(market cap) = ' + DATA.size_curve.intercept.toFixed(2) + ' + ' + DATA.size_curve.slope.toFixed(2) + ' \u00d7 log10(TVL), fitted by least squares over the ' + DATA.comps_size + ' live tokens; each category then carries its median residual off that curve (at least ' + m.comps_min_n + ' comps), or none when it has too few. No protocol name is special-cased, and no row is hand-picked.' }),
-      el('div', { class: 'formula' }, 'implied = round( 10^( ' + DATA.size_curve.intercept.toFixed(2) + ' + ' + DATA.size_curve.slope.toFixed(2) + ' \u00d7 log10(tvl_usd) + category_residual ) \u00d7 (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 \u00d7 ' + m.growth_weight + ') \u00d7 (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' \u00d7 ' + m.maturity_range + ') \u00d7 (1 + min(chains - 1, ' + m.chain_max_extra + ') \u00d7 ' + m.chain_weight + ') )'),
+      el('p', { text: 'Every row is scored by one function of the snapshot figures. The size curve is log10(market cap) = ' + curve.intercept.toFixed(2) + ' + ' + curve.slope.toFixed(2) + ' \u00d7 log10(TVL), fitted by least squares over the ' + DATA.comps_size + ' live tokens; each category then carries its median residual off that curve (at least ' + m.comps_min_n + ' comps), or none when it has too few. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('div', { class: 'formula' }, 'implied = round( 10^( ' + curve.intercept.toFixed(2) + ' + ' + curve.slope.toFixed(2) + ' \u00d7 log10(tvl_usd) + category_residual ) \u00d7 (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 \u00d7 ' + m.growth_weight + ') \u00d7 (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' \u00d7 ' + m.maturity_range + ') \u00d7 (1 + min(chains - 1, ' + m.chain_max_extra + ') \u00d7 ' + m.chain_weight + ') )'),
+      el('p', { text: PAGE
+        ? 'This page fits that curve itself, from the ' + DATA.comps_size + ' comparables shipped beside it (comps.js) with the fit in model.js — the same derivation that priced the board — and the fit it computed ' + (agrees ? 'matches the board\u2019s stored curve exactly, intercept and slope and both out-of-sample factors.' : 'DOES NOT match the board\u2019s stored curve: the board would be stale.')
+        : 'The comparables file did not load, so this tab shows the curve the board was priced from instead of a fit the page computed.' }),
       el('h2', { text: 'Out-of-sample test' }),
       el('p', { text: 'The ' + DATA.comps_size + ' live comparables were split by slug into a fit half (' + v.fit_n + ') and a test half (' + v.test_n + '). The curve and residuals were fitted on the fit half only; the test half was then predicted with the same function. The typical test prediction lands within \u00d7' + v.oos_factor + ' of the real market cap, and ' + Math.round(v.within_2x * 100) + '% of test protocols land within \u00d72. Read every implied value with that error in mind: a \u00d7' + v.oos_factor + ' band, not a price.' }),
+      el('p', { text: 'The split was also run the other way round — odd positions fit, even positions test — and the typical prediction lands within \u00d7' + v.oos_factor_b + ' of the real cap, with ' + Math.round(v.within_2x_b * 100) + '% within \u00d72. Neither half is the headline: both are the test.' }),
+      v.time_split ? el('p', { text: 'Time split: comparables listed before ' + v.time_split.cutoff + ' (' + v.time_split.fit_n + ') fitted the curve, and comparables listed on or after that date (' + v.time_split.test_n + ') were predicted with it. The typical newer listing lands within \u00d7' + v.time_split.factor + ' of its real cap, with ' + Math.round(v.time_split.within_2x * 100) + '% within \u00d72 — the curve holds across time, not just across a shuffled split.' }) : null,
+      v.bootstrap ? el('p', { text: 'Bootstrap: refitting the curve on ' + v.bootstrap.resamples + ' resamples of the comparables (fixed seed) puts the slope\u2019s middle half at ' + v.bootstrap.slope_low.toFixed(2) + '–' + v.bootstrap.slope_high.toFixed(2) + ' and the intercept\u2019s at ' + v.bootstrap.intercept_low.toFixed(2) + '–' + v.bootstrap.intercept_high.toFixed(2) + ': the curve does not hinge on any few comps.' }) : null,
       el('h2', { text: 'Signal bands and farm verdicts' }),
       el('p', { text: 'PRIME is an implied value of $40M or more — above the top quartile of live tokens ($35M) — STRONG $15M, WATCH $5M, EARLY below that. FARM means a prime or strong launch with no sharp decline; THIN means a watch-band launch, or a strong one whose TVL fell 20% or more in 7 days — farm it small, if at all; SKIP means an early-band launch, where the farm cost outweighs the modelled launch for now.' }),
       el('div', { class: 'legend' },
@@ -382,7 +409,7 @@
             el('span', { text: 'Chain multiplier' }), el('b', { text: fmtMult(row.chain_multiplier) }),
             el('span', { class: 'total', text: 'Implied value' }), el('b', { class: 'total', text: fmtUsd(row.implied_value_usd) })
           ),
-          el('p', { class: match ? 'match' : 'mismatch', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputed) + (match ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Read it inside the out-of-sample band of \u00d7' + DATA.validation.oos_factor + '.' }),
+          el('p', { class: match ? 'match' : 'mismatch', text: 'Model ' + DATA.model_version + ': the page fits the curve from the comparables and recomputes this row as ' + fmtUsd(recomputed) + (match ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Read it inside the out-of-sample band of \u00d7' + DATA.validation.oos_factor + '.' }),
           el('h3', { text: 'Farm verdict' }),
           el('p', null, el('span', { class: 'badge ' + row.verdict, text: row.verdict }), document.createTextNode(' ' + row.verdict_reason)),
           el('h3', { text: 'Risk flags' }),

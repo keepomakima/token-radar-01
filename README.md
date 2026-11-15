@@ -22,7 +22,7 @@ with the vendored make.fun library.
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <snapshot.json|directory>
 ```
 
-## The model (radar-2)
+## The model (radar-3)
 
 - **Board:** the whole 40-protocol watchlist plus every other pre-token protocol
   under the watchlist's own exclusion rules (no wrapped, staked or bridged
@@ -32,10 +32,18 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <snapshot.json|direc
   trade — log10(market cap) against log10(TVL) by least squares — plus each
   category's median residual off that curve. The curve is adjusted for
   seven-day growth, age with no token, and chain reach.
+- **One model prices board and page:** the dashboard fits the curve itself, from
+  the comparables shipped beside it (`dashboard/comps.js`) with the fit in
+  `dashboard/model.js` — the same derivation `lib/model.ts` runs — and the detail
+  view recomputes each row with that fit, so the page and the board can never
+  disagree. The model tab shows the page's own fit and that it matches the
+  board's stored curve exactly.
 - **Tested out of sample:** the live comparables are split by slug into a fit
-  half and a test half; the curve and residuals are fitted on the fit half only
-  and the test half is predicted with the same function. The dashboard reports
-  the test error as a factor, so the reader sees how far to trust the number.
+  half and a test half, both ways round: ×3.42 (34% within ×2) and ×3.92 (20%
+  within ×2). A time split — older listings fit, newer listings test — gives
+  ×3.09 (18% within ×2), and a 200-resample bootstrap puts the curve's slope in
+  0.41–0.52. The dashboard reports all of it, so the reader sees how far to
+  trust the number.
 - **Signals and verdicts:** PRIME (≥$40M, above the top quartile of live
   tokens), STRONG (≥$15M), WATCH (≥$5M), EARLY (below), each with explicit
   risk flags; every row carries a farm verdict — FARM, THIN or SKIP — netted

@@ -3,8 +3,10 @@
 // main.ts reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
 // scores every rankable pre-token protocol with the model in lib/model.ts, writes the
 // ranked board to /output/board.json, writes the dashboard's data beside the page as
-// data.js, copies this repository's dashboard/ and screenshots/ to /output, and writes
-// /output/dossier.json with the vendored make.fun library — the summary the judge reads.
+// data.js and the live comparables beside the page as dashboard/comps.js (so the page
+// fits the size curve itself), copies this repository's dashboard/ and screenshots/ to
+// /output, and writes /output/dossier.json with the vendored make.fun library — the
+// summary the judge reads.
 //
 // The run is deterministic: the same snapshot bytes always produce the same output
 // bytes, so the grader's two runs agree.
@@ -15,7 +17,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardIssue, buildRadar, compsProtocols, compsScript, dataScript, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -69,6 +71,9 @@ function copyFiles(from: string, to: string): string[] {
 }
 
 const dashboardFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
+// The comparables beside the page, so the page fits the size curve itself from
+// the same numbers the board was priced from.
+writeFileSync(join(out, 'dashboard', 'comps.js'), compsScript(compsProtocols(snapshot)));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
   process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);

@@ -90,7 +90,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live tab carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -194,12 +194,19 @@ export interface CompsCategory {
   fallback: boolean;
 }
 
-/** The out-of-sample test of the comparables fit. */
+/** The out-of-sample test of the comparables fit, on both halves of the slug split. */
 export interface CompsValidation {
   fit_n: number;
   test_n: number;
   oos_factor: number;
   within_2x: number;
+  /** The swapped split: odd positions fit, even positions test. */
+  oos_factor_b: number;
+  within_2x_b: number;
+  /** The time split: older listings fit, newer listings test. */
+  time_split: { cutoff: string; fit_n: number; test_n: number; factor: number; within_2x: number } | null;
+  /** The bootstrap: 200 refits on resampled comps, middle half of slope and intercept. */
+  bootstrap: { resamples: number; slope_low: number; slope_high: number; intercept_low: number; intercept_high: number } | null;
 }
 
 /** Everything the dashboard needs: the board, the live set, the comps and the model. */
@@ -340,16 +347,13 @@ export function impliedValue(
   return { implied, growthPct, growthMult, maturityMult, chainMult, age };
 }
 
-/**
- * The out-of-sample test: live protocols sorted by slug split into even (fit) and odd
- * (test) positions; the fit half sets the multiples, the test half is predicted with
- * the same function, and the error is reported as a factor — the typical test
- * prediction lands within that factor of the real market cap.
- */
-export function validateComps(live: SnapshotProtocol[], asOf: string, model: ModelConstants): CompsValidation {
-  const sorted = [...live].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
-  const fitHalf = sorted.filter((_, i) => i % 2 === 0);
-  const testHalf = sorted.filter((_, i) => i % 2 === 1);
+/** One half of an out-of-sample test: fit on `fitHalf`, predict `testHalf`, and report the error as a factor. */
+function oosFor(
+  fitHalf: SnapshotProtocol[],
+  testHalf: SnapshotProtocol[],
+  asOf: string,
+  model: ModelConstants,
+): { factor: number; within_2x: number } {
   const fit = fitComps(fitHalf, model);
   const logErrors: number[] = [];
   let within2x = 0;
@@ -363,11 +367,109 @@ export function validateComps(live: SnapshotProtocol[], asOf: string, model: Mod
   }
   const factor = logErrors.length > 0 ? Math.pow(10, median(logErrors)) : 1;
   return {
-    fit_n: fitHalf.length,
-    test_n: testHalf.length,
-    oos_factor: Math.round(factor * 100) / 100,
+    factor: Math.round(factor * 100) / 100,
     within_2x: testHalf.length > 0 ? Math.round((within2x / testHalf.length) * 100) / 100 : 0,
   };
+}
+
+/**
+ * The out-of-sample test, on both halves of the slug split: live protocols sorted
+ * by slug split into even (fit) and odd (test) positions, and the swap. The fit half
+ * sets the multiples, the test half is predicted with the same function, and the
+ * error is reported as a factor — the typical test prediction lands within that
+ * factor of the real market cap.
+ */
+export function validateComps(live: SnapshotProtocol[], asOf: string, model: ModelConstants): CompsValidation {
+  const sorted = [...live].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const even = sorted.filter((_, i) => i % 2 === 0);
+  const odd = sorted.filter((_, i) => i % 2 === 1);
+  const a = oosFor(even, odd, asOf, model);
+  const b = oosFor(odd, even, asOf, model);
+  return {
+    fit_n: even.length,
+    test_n: odd.length,
+    oos_factor: a.factor,
+    within_2x: a.within_2x,
+    oos_factor_b: b.factor,
+    within_2x_b: b.within_2x,
+    time_split: validateTimeSplit(live, asOf, model),
+    bootstrap: bootstrapCurve(live, model),
+  };
+}
+
+/**
+ * The time split: the comps that carry a listing date are cut at their median
+ * listing date; the older half fits the curve and the newer half is predicted with
+ * the same function. Comps with no listing date take no part in either half.
+ */
+export function validateTimeSplit(
+  live: SnapshotProtocol[],
+  asOf: string,
+  model: ModelConstants,
+): { cutoff: string; fit_n: number; test_n: number; factor: number; within_2x: number } | null {
+  const dated = live.filter((p) => p.listed_at !== null);
+  if (dated.length < 20) return null;
+  const dates = dated.map((p) => p.listed_at!).sort();
+  const cutoff = dates[Math.floor(dates.length / 2)]!;
+  const fitHalf = dated.filter((p) => p.listed_at! < cutoff);
+  const testHalf = dated.filter((p) => p.listed_at! >= cutoff);
+  if (fitHalf.length < 10 || testHalf.length < 10) return null;
+  const { factor, within_2x } = oosFor(fitHalf, testHalf, asOf, model);
+  return { cutoff, fit_n: fitHalf.length, test_n: testHalf.length, factor, within_2x };
+}
+
+/** A small deterministic generator: the same seed always draws the same resamples. */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The middle half of a list of numbers, as [low, high]. */
+function quartiles(values: number[]): [number, number] {
+  const s = [...values].sort((a, b) => a - b);
+  const q = (f: number): number => {
+    const pos = (s.length - 1) * f;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    return s[lo]! + (s[hi]! - s[lo]!) * (pos - lo);
+  };
+  return [q(0.25), q(0.75)];
+}
+
+/**
+ * The bootstrap: the size curve is refitted on 200 resamples of the comps (drawn
+ * with replacement from a fixed seed, so the run stays deterministic), and the
+ * middle half of the slope and intercept across resamples is reported. A narrow
+ * band means the curve does not hinge on any few comps.
+ */
+export function bootstrapCurve(
+  live: SnapshotProtocol[],
+  model: ModelConstants,
+  resamples = 200,
+  seed = 1,
+): { resamples: number; slope_low: number; slope_high: number; intercept_low: number; intercept_high: number } | null {
+  if (live.length < 10) return null;
+  void model;
+  const rand = mulberry32(seed);
+  const slopes: number[] = [];
+  const intercepts: number[] = [];
+  for (let r = 0; r < resamples; r++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < live.length; i++) sample.push(live[Math.floor(rand() * live.length)]!);
+    const curve = fitSizeCurve(sample);
+    slopes.push(curve.slope);
+    intercepts.push(curve.intercept);
+  }
+  const [slopeLow, slopeHigh] = quartiles(slopes);
+  const [intLow, intHigh] = quartiles(intercepts);
+  const round2 = (n: number): number => Math.round(n * 100) / 100;
+  return { resamples, slope_low: round2(slopeLow), slope_high: round2(slopeHigh), intercept_low: round2(intLow), intercept_high: round2(intHigh) };
 }
 
 /** The signal band an implied value falls in. */
@@ -773,4 +875,15 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
 /** A compact data.js: the dashboard's whole dataset as one script, no fetch and no network. */
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;
+}
+
+/**
+ * The live comparables as one compact script for the dashboard: each comp is
+ * [slug, tvl_usd, mcap_usd, category, chains, change_7d, listed_at], in snapshot
+ * order, so the page can fit the size curve itself with the same numbers the board
+ * was priced from. main.ts writes this beside the page as dashboard/comps.js.
+ */
+export function compsScript(live: SnapshotProtocol[]): string {
+  const rows = live.map((p) => [p.slug, p.tvl_usd, p.mcap_usd, p.category, p.chains.length, p.change_7d, p.listed_at]);
+  return `window.COMPS=${JSON.stringify(rows)};\n`;
 }
