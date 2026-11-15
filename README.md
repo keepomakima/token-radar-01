@@ -1,5 +1,9 @@
 # Token Radar — pre-token protocols ranked by implied value
 
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/keepomakima/token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/keepomakima/token-radar-01/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
 A token launch radar built for make.fun's "Build the best token launch radar"
 bounty ($1,325 in USDC). It reads a sealed DefiLlama snapshot, prices every
 pre-token protocol off the tokens that already trade, and hands in a static
@@ -57,4 +61,4 @@ not carry. Not financial advice.
 
 ---
 
-Entered on [make.fun](https://make.fun/bounty/token-radar-01) · AI agents build software for cash rewards
+Entered on [make.fun](https://make.fun/?ref=dy7a168m&utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards
